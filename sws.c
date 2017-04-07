@@ -100,6 +100,7 @@ typedef struct Queue{
 	int size;
 } queue;
 
+queue *workerqueue;
 queue *queue8;
 queue *queue64; //Only in MML
 queue *queuerr; //Only in MML
@@ -119,6 +120,10 @@ void constructQueues()
  	queue64 -> front = NULL;
 	queue64 -> rear = NULL;
 	queuerr= (queue*)malloc(sizeof(queue));
+	queuerr -> size = 0;
+ 	queuerr -> front = NULL;
+	queuerr -> rear = NULL;
+	workerqueue = (queue*)malloc(sizeof(queue));
 	queuerr -> size = 0;
  	queuerr -> front = NULL;
 	queuerr -> rear = NULL;
@@ -223,30 +228,28 @@ void printQueue(queue *q){
  *       Currently doesnt really indicate anything
  */
 int schedulerIN(struct request newReq){
-  //Enqueue Operation
-    if(newReq.size_remain > 0){
-      //number of requests read in so far
-      printf("Glob seq now%d\n\n", *glob_seq);
-	if(schedalgo == 0 || schedalgo == 1){
-      		enqueue(newReq, queue8);
+	//enqueue operation
+	if(newReq.size_remain > 0){
+		  //number of requests read in so far
+		  printf("Glob seq now%d\n\n", *glob_seq);
+		if(schedalgo == 0 || schedalgo == 1){
+				enqueue(newReq, queue8);
+		}
+		else if (newReq.quantum_cur == 8){
+				enqueue(newReq, queue8);
+		}
+		else if (newReq.quantum_cur == 64){
+				enqueue(newReq, queue64);
+		}
+		else{
+			enqueue(newReq, queuerr);
+		}
+		return 1;
 	}
-	else if (newReq.quantum_cur == 8){
-      		enqueue(newReq, queue8);
-	}
-	else if (newReq.quantum_cur == 64){
-      		enqueue(newReq, queue64);
-	}
-	else{
-		enqueue(newReq, queuerr);
-	}
-      //display(head);
-      return 0;
-    }
-    else{
-      printf("Request %d completed\n", newReq.sequence);
-      return 0;
-    }
-  return 0; 
+		else{
+			printf("Request done");
+			return 0;
+		}
 }
 //-----------------------------------------------------------------------------
 /*
@@ -441,20 +444,10 @@ static void request_parse(int fd){
         strcpy(newReq->buffer, buffer);
         //quantum = ?
 
-        //send request struct to schedulerIN, 
-        int result = schedulerIN(*newReq);
-        
-        //Supposed to check if the request was successfully added, 
-        //ScheduleIN in always returns 0 right now though
-        if(result == 0){
-          len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );
-          *glob_seq = *glob_seq + 1;
-          printf("Global seq: %d\n\n", *glob_seq);
-          write( fd, buffer, len );
-        }
-        else{
-          printf("Error with scheduling request\n");
-        }        
+        //send request to worker queue 
+		enqueue(*newReq, workerqueue);
+
+       
         
         // close the file stream after since we are not reading it 
         // or sending it anymore right now and it is local
@@ -655,17 +648,23 @@ static void serve_client(){//request *r) {
 
 void worker(){
 	while(1){
-	
-	sem_wait(&workerready);
-	if(!isEmpty(queue8) || !isEmpty(queue64) || !isEmpty(queuerr)){
-		printf("\nThere is still so much to do!\n");	
-		//int nextReq = schedulerOUT();
-		pthread_mutex_lock(&workmutex);
-		serve_client();//nextReq);
-		printf("Queue size: %d\n", queue8->size);
-		pthread_mutex_unlock(&workmutex);
-	}
-
+		if(!isEmpty(workerqueue)){
+			//Dequeue Operation
+			struct request newReq = dequeue(workerqueue)->req;
+			//schedule the request
+			schedulerIN(newReq);
+	  	} 
+		else{
+			sem_wait(&workerready);
+			if(!isEmpty(queue8) || !isEmpty(queue64) || !isEmpty(queuerr)){
+				printf("\nThere is still so much to do!\n");	
+				//int nextReq = schedulerOUT();
+				pthread_mutex_lock(&workmutex);
+				serve_client();//nextReq);
+				printf("Queue size: %d\n", queue8->size);
+				pthread_mutex_unlock(&workmutex);
+			}
+		}
 	}
 }
 
