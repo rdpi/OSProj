@@ -44,6 +44,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <pthread.h>
+#include <semaphore.h>
 
 #include "network.h"
 
@@ -55,8 +57,14 @@ int *glob_seq;
 //request counter variable (not used?)
 int *req_count;
 
+//flag to indicate scheduling algorithm
 int schedalgo;
 
+//semaphore to wake worker thread
+sem_t workerready;
+
+//test mutex
+pthread_mutex_t workmutex;
 
 //request structure definition
 //    sequence : instructions say to include, indicates what number this job is (eg: 3rd arrived)
@@ -75,167 +83,129 @@ typedef struct request{
   int quantum_cur;
 } request;
 
-
-//linked list for storing requests
-//    Above requests structs stored in linked list,
-//    request req = data part,
-//    node *next = pointer to next element in chain
-struct node{
-  request req;
-  struct node *next;
-}*head;
-
 //declaring a pointer to a global linked list node struct
 //    This will likely be something that has to be mutex'd
 //struct node *n;
 
 
-//**********************************Bunch of Linked list functions,
-// TODO: Change struct name from num to something more descriptive in all
-//       Move to seperate file if possible
-void append(struct request num)
-{
-    struct node *temp,*right;
-    temp= (struct node *)malloc(sizeof(struct node));
-    temp->req=num;
-    right=(struct node *)head;
-    while(right->next != NULL)
-    right=right->next;
-    right->next =temp;
-    right=temp;
-    right->next=NULL;
-}
- 
-void add(struct request num )
-{
-    struct node *temp;
-    temp=(struct node *)malloc(sizeof(struct node));
-    temp->req=num;
-    if (head== NULL)
-    {
-    head=temp;
-    head->next=NULL;
-    }
-    else
-    {
-    temp->next=head;
-    head=temp;
-    }
-}
+//------------------------------------New Q------------------------------
+typedef struct Node{
+	request req;
+	struct Node *next;
+} node;
 
-void addafter(struct request num, int loc)
-{
-    int i;
-    struct node *temp,*left,*right;
-    right=head;
-    for(i=1;i<loc;i++)
-    {
-    left=right;
-    right=right->next;
-    }
-    temp=(struct node *)malloc(sizeof(struct node));
-    temp->req=num;
-    left->next=temp;
-    left=temp;
-    left->next=right;
-    return;
-}
+typedef struct Queue{
+	struct Node *front;
+	struct Node *rear;
+	int size;
+} queue;
 
-int count()
-{
-    struct node *n;
-    int c=0;
-    n=head;
-    while(n!=NULL)
-    {
-    n=n->next;
-    c++;
-    }
-    return c;
-}
- 
- void insert(struct request num)
-{
-    int c=0;
-    struct node *temp;
-    temp=head;
-    if(temp==NULL)
-    {
-    add(num);
-    }
-    else
-    {
-    while(temp!=NULL)
-    {
-        if(temp->req.file_size < num.file_size)
-        c++;
-        temp=temp->next;
-    }
-    if(c==0)
-        add(num);
-    else if(c<count())
-        addafter(num,++c);
-    else
-        append(num);
-    }
-}
- 
-int delete(struct request num)
-{
-    struct node *temp, *prev;
-    temp=head;
-    while(temp!=NULL)
-    {
-    if(temp->req.sequence == num.sequence)
-    {
-        if(temp==head)
-        {
-        head=temp->next;
-        free(temp);
-        return 1;
-        }
-        else
-        {
-        prev->next=temp->next;
-        free(temp);
-        return 1;
-        }
-    }
-    else
-    {
-        prev=temp;
-        temp= temp->next;
-    }
-    }
-    return 0;
-}
-
-void  display(struct node *r)
-{
-    printf("******Display linked list Contents*****\n");
-    r=head;
-    if(r==NULL)
-    {
-    return;
-    }
-    while(r!=NULL)
-    {
-      printf("sequenceid: %d\n",r->req.sequence);
-      printf("filename: %s\n",r->req.file_name);
-      printf("file_descriptor: %d\n", r->req.file_descriptor);
-      printf("file_size: %d\n", r->req.file_size);
-      printf("data_remaining: %d\n", r->req.size_remain);
-      printf("-----------------------------------------\n");
+queue *queue8;
+queue *queue64; //Only in MML
+queue *queuerr; //Only in MML
 
 
-      r=r->next;
-    }
-    printf("****** END Display linked list Contents*****\n");
-    printf("\n");
+int isEmpty(queue *q);
+
+//Initializer
+void constructQueues()
+{	
+	queue8= (queue*)malloc(sizeof(queue));
+	queue8 -> size = 0;
+ 	queue8 -> front = NULL;
+	queue8 -> rear = NULL;
+	queue64= (queue*)malloc(sizeof(queue));
+	queue64 -> size = 0;
+ 	queue64 -> front = NULL;
+	queue64 -> rear = NULL;
+	queuerr= (queue*)malloc(sizeof(queue));
+	queuerr -> size = 0;
+ 	queuerr -> front = NULL;
+	queuerr -> rear = NULL;
+	
 }
-//************************************END OF LINKED LIST FUNCTIONS
 
+//Adds request to the end of a queue
+void enqueue(struct request r, queue *q){
+	node *temp = (node*)malloc(sizeof(node));
+	(temp -> req) = r;
+	(temp -> next) = NULL;
+	if (isEmpty(q)){
+		(q -> front) = temp;
+		(q -> rear) = temp;
+	}
+	else{
+		((q ->rear) -> next) = temp;
+		(q -> rear) = temp;	
+	}
+	(q -> size)++;
+	printf("Front-> %d\n Rear -> %d\n", q->front->req.sequence, q->rear->req.sequence);
+}
 
+//Removes node at the front of the queue and returns it
+node *dequeue(queue *q){
+
+	node *temp;
+	if(isEmpty(q)){
+		printf("Queue empty");
+		return NULL;
+	}
+	temp = (q -> front);
+	(q -> front) = (q -> front) -> next;
+	q -> size--;
+	temp->next =NULL;
+	return temp;
+}
+
+//Removes node with given sequence
+//ONLY FOR USE WITH SJF, will not work otherwise
+//Use dequeue() for RR and MML
+node *dequeuePos(int seq){
+    node *temp, *prev;
+    temp=(queue8->front);
+    while(temp!=NULL){
+    	if(temp->req.sequence == seq){
+        	if(queue8->front->req.sequence==seq){
+        		(queue8->front)=queue8->front->next;
+        	}
+    		else if((temp->next)==NULL){
+			queue8->rear= prev;
+        		prev->next= NULL;
+		}
+        	else{
+        		prev->next=temp->next;
+        	}
+		queue8 -> size--;
+		temp->next =NULL;
+		printf("Dequeueing %d\n", temp->req.sequence); 
+		return temp;
+    	}
+    	else if((temp->next)!=NULL){
+        	prev=temp;
+        	temp= temp->next;
+    	}
+	else
+	{
+		printf("Couldn't find");
+		return NULL;
+	}
+    }
+	return NULL;
+}
+
+//Checks if queue is empty
+int isEmpty(queue *q){
+	return ((q->size) == 0);
+}
+
+//Prints front and rear of queue
+void printQueue(queue *q){
+	if(q->front!=NULL && q->rear!=NULL){
+		printf("Front-> %d\n Rear -> %d\n", q->front->req.sequence, q->rear->req.sequence);
+	}
+}
+
+//------------------------------------New Q------------------------------
 
 /*
  * Scheduler in takes in new request struct to add to the linked list
@@ -255,12 +225,21 @@ void  display(struct node *r)
 int schedulerIN(struct request newReq){
   //Enqueue Operation
     if(newReq.size_remain > 0){
-
       //number of requests read in so far
       printf("Glob seq now%d\n\n", *glob_seq);
-
-      insert(newReq);
-      display(head);
+	if(schedalgo == 0 || schedalgo == 1){
+      		enqueue(newReq, queue8);
+	}
+	else if (newReq.quantum_cur == 8){
+      		enqueue(newReq, queue8);
+	}
+	else if (newReq.quantum_cur == 64){
+      		enqueue(newReq, queue64);
+	}
+	else{
+		enqueue(newReq, queuerr);
+	}
+      //display(head);
       return 0;
     }
     else{
@@ -285,42 +264,85 @@ int schedulerIN(struct request newReq){
  */
 //RETRUNS SEQUENCE ID NUMBER OF SMALLEST SIZE REQUEST IN THE QUEUEUEU
 
-int schedulerOUT(struct node *r){
+node *schedulerOUT(){
   //notify print out of stuff happening in schedule out
-  printf("Scheduler OUT start--------------------------------------\n");
-  //set a local r to point at head of linked list
-  r = head;
+	node *r;  
+	if(!isEmpty(queue8)){
+		r = queue8->front;
+	}
+	else if(!isEmpty(queue64)){
+		r = queue64 -> front;
+	}
+	else if(!isEmpty(queuerr)){
+		r= queuerr -> front;	
+	}
+	//SJF determination
+	if(schedalgo == 0 && r!= NULL){
+		printf("Scheduler OUT start--------------------------------------\n");
+	  	//set a local r to point at head of linked list
 
-  //set current minsize and sequence id of that linked list entry 
-  //to the ones in the head of the linked list
-  int minSize = r->req.file_size;
-  int smallestID = r->req.sequence;
 
-  //print out the above infos
-  printf("minsize init: %d\n", minSize);
-  printf("smallest id init: %d\n", smallestID);
-  //find smallest by itterating through the linked list
-  //if NULL pointer is reached, print out what the smallest is,
-  //Otherwise keep going and update the smallest vars if the value in
-  //the next linked list element is smaller than the current
-  do{
-    if(r == NULL){
-      printf("SmallestID: %d\n", smallestID);
-      printf("Next smallest job is %d bytes long\n", smallestID);
-      printf("Scheduler OUT END------------------------------------------\n");
-      return smallestID;
-    }
-    else if(r->req.file_size < minSize){
-      minSize = r->req.file_size;
-      smallestID = r->req.sequence;
-    }
-    r=r->next;
-    //indicate loop occured
-    printf("looped\n");
-  }while(r != NULL);
+	  	//set current minsize and sequence id of that linked list entry 
+	  	//to the ones in the head of the linked list
+	  	int minSize = r->req.file_size;
+	  	int smallestID = r->req.sequence;
 
-  //This should not be reached  
-  return smallestID;
+	  	//print out the above infos
+	  	printf("minsize init: %d\n", minSize);
+	  	printf("smallest id init: %d\n", smallestID);
+	  	//find smallest by itterating through the linked list
+	  	//if NULL pointer is reached, print out what the smallest is,
+	  	//Otherwise keep going and update the smallest vars if the value in
+	  	//the next linked list element is smaller than the current
+	  	do{
+			printf("queuesize is %d\n", queue8->size);
+	  		r=r->next;
+	  		if(r == NULL){
+				printf("SmallestID: %d\n", smallestID);
+				printf("Smallest job is %d bytes long\n", minSize);
+	      			printf("Scheduler OUT END------------------------\n");
+				return dequeuePos(smallestID);
+	    			//return smallestID;
+	    		}
+	    		else if(r->req.file_size < minSize){
+	      			minSize = r->req.file_size;
+	      			smallestID = r->req.sequence;
+	    		}
+	    		//indicate loop occured
+	    		printf("looped\n");
+	  	}while(r != NULL);
+
+  		//This should not be reached  
+  		return dequeue(queue8);//smallestID;
+	}
+	else if(schedalgo==1 && r!= NULL){
+		printQueue(queue8);
+		printf("Returning %d\n", queue8->front->req.sequence);
+		return dequeue(queue8);
+	}
+	else if(schedalgo==2 && r!=NULL){
+		printf("Queue 1: \n");
+		printQueue(queue8);
+		printf("Queue 2: \n");
+		printQueue(queue64);
+		printf("Queue 3: \n");
+		printQueue(queuerr);
+		if(!isEmpty(queue8)){
+			printf("Returning %d\n", queue8->front->req.sequence);
+			return dequeue(queue8);
+		}
+		else if(!isEmpty(queue64)){
+			printf("Returning %d\n", queue64->front->req.sequence);
+			return dequeue(queue64);
+		}
+		else{
+			printf("Returning %d\n", queuerr->front->req.sequence);
+			return dequeue(queuerr);
+		}
+	}
+	else{
+		return NULL;
+	}
 }
 
 
@@ -380,9 +402,6 @@ static void request_parse(int fd){
   if( !req_file ) {                                      
     len = sprintf( buffer, "HTTP/1.1 400 Bad request\n\n" );
     write( fd, buffer, len );
-    //Leave function if bad request
-    abort();
-    return;
   } 
   //if it is keep going
   else {
@@ -396,12 +415,6 @@ static void request_parse(int fd){
     if( !fin ) {
       len = sprintf( buffer, "HTTP/1.1 404 File not found\n\n" );  
       write(fd, buffer, len );
-      //leave function if file not found
-      //Closing filestream and socket (not working?)
-      fclose(fin);
-      close(fd);
-      abort();
-      return;
     }
 
     //Request is Good -> check file_size, initilize a structure for it,
@@ -423,6 +436,7 @@ static void request_parse(int fd){
         newReq->size_remain = size;
         newReq->sequence = *glob_seq;
         newReq->file_descriptor = fd;
+		newReq->quantum_cur= 8;
         strcpy(newReq->file_name, req_file);
         strcpy(newReq->buffer, buffer);
         //quantum = ?
@@ -463,7 +477,7 @@ static void request_parse(int fd){
  * 
  */
 
-static void serve_client(int nextReq, struct node *r) {
+static void serve_client(){//request *r) {
   //Initilize same stuff needed for sending requested file back to client
   // eg: connection info, socket, file_requested, etc.
   char *buffer; 
@@ -475,8 +489,11 @@ static void serve_client(int nextReq, struct node *r) {
   int len;
 
   //set r to point to head of linked list
-  r=head;
-
+	//node *r;
+  //r=queue8->front;
+	node *r;
+	r = schedulerOUT();
+/*
     //This itterates through the linked list, looking for
     //The entry with the nextReq sequence ID , 
     //(smallest next request was determined in scheduleOUT and returned to main)
@@ -489,30 +506,31 @@ static void serve_client(int nextReq, struct node *r) {
   }
   //print out values @ current element r is pointing to (should be same as nextReq)
   printf("r value sequence value: %d\n", r->req.sequence);
-  printf("nextreq sequence value: %d\n", nextReq);
+  printf("nextreq sequence value: %d\n", nextReq);*/
 
 
   //get relevant connection/file infos for this request element
-  fd = r->req.file_descriptor;
-  req_file = r->req.file_name;
-  buffer = r->req.buffer;
+  	fd = r->req.file_descriptor;
+  	req_file = r->req.file_name;
+  	buffer = r->req.buffer;
 
     //Do the serving of the request using the above info,
     //open filestream  to correct req_file
     //Check if file is opened correct or not, post status code to client
-    fin = fopen( req_file, "r" );                        /* open file */
-    if( !fin ) {                                    /* check if successful */
-      len = sprintf( buffer, "HTTP/1.1 404 File not found\n\n" );
-      //Try to shut down connection / file reading  
-      write( fd, buffer, len );                     /* if not, send err */
-      fclose(fin);
-      close(fd);
-      //Try to exit function, still causes segmentation fault 
-      //currently
-      return;
-      } else {                                        /* if so, send file */
-        len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
-        write( fd, buffer, len );
+	
+    	fin = fopen( req_file, "r" );     
+//if(0){                   /* open file */
+    	if( !fin ) {                                    /* check if successful */
+     		len = sprintf( buffer, "HTTP/1.1 404 File not found\n\n" );
+      		//Try to shut down connection / file reading  
+      		write( fd, buffer, len );                     /* if not, send err */
+      	} 
+	else {                                        /* if so, send file */
+        	len = sprintf( buffer, "HTTP/1.1 200 OK\n\n" );/* send success code */
+        	write( fd, buffer, len );
+	}
+	
+//}
 
       //Once file stream opened fine, loop through sending (i think) 1 byte at a time
       //If there is file left to transfer keep going, 
@@ -524,55 +542,133 @@ static void serve_client(int nextReq, struct node *r) {
 	  
 	
 	printf("About to do something\n");
-      if(schedalgo == 1){
-		 printf("Doing Round Robin\n");
+
+	if(schedalgo == 0){
+		printf("Doing SJF\n");
+		fflush(stdout);
+		do {                              /* loop, read & send file */
+			len = fread( buffer, 1, MAX_HTTP_SIZE, fin ); /* read file chunk */
+			if( len < 0 ) {           /* check for errors */
+				perror( "Error while writing to client" );
+			} 
+			else if( len > 0 ) {          /* if none, send chunk */
+			  	len = write( fd, buffer, len );
+				if( len < 1 ) {          /* check for errors */
+				perror( "Error while writing to client" );
+				}
+			}
+		} while( len == MAX_HTTP_SIZE );  /* the last chunk < 8192 */
+		
+		fclose( fin );
+		close(fd);
+	}
+	else if(schedalgo == 1){
+		printf("Doing Round Robin\n");
 		fseek(fin, -1*(r->req.size_remain+1), SEEK_END);
 		len = fread( buffer, 1, MAX_HTTP_SIZE, fin);
 		if( len < 0 ) {                             /* check for errors */
-            perror( "Error while writing to client" );
-        } else if( len > 0 ) {                      /* if none, send chunk */
-          len = write( fd, buffer, len );
-          if( len < 1 ) {                           /* check for errors */
-            perror( "Error while writing to client" );
-          }
-        }
-		request remainreq;
-		//Make a new request and add it back into the queue
-  		strcpy(remainreq.file_name, r->req.file_name);
-  		strcpy(remainreq.buffer, r->req.buffer);
-   		remainreq.file_descriptor = r->req.file_descriptor;
-  		remainreq.file_size = r->req.file_size;
-  		r->req.size_remain -= len;
-  		remainreq.quantum_cur = r->req.quantum_cur;
-
-		delete(r->req);
-		schedulerIN(remainreq);
-		display(head);
-      }
-	  if(schedalgo == 0){
-		  printf("Doing SJF\n");
-		  do {                                          /* loop, read & send file */
-			len = fread( buffer, 1, MAX_HTTP_SIZE, fin );  /* read file chunk */
-			if( len < 0 ) {                             /* check for errors */
-				perror( "Error while writing to client" );
-			} else if( len > 0 ) {                      /* if none, send chunk */
-			  len = write( fd, buffer, len );
-			  if( len < 1 ) {                           /* check for errors */
-				perror( "Error while writing to client" );
-			  }
-			}
-		  } while( len == MAX_HTTP_SIZE );              /* the last chunk < 8192 */
-		  fclose( fin );
+			perror( "Error while writing to client" );
+    		} 
+		else if( len > 0 ) {                      /* if none, send chunk */
+			len = write( fd, buffer, len );
+			if( len < 1 ) {           /* check for errors */
+            		perror( "Error while writing to client" );
+        		}
+        	}
+		
+		//Readd request to queue if it still has more data
+	  	r->req.size_remain -= len;
+		printf("Total size: %d", r->req.file_size);
+		printf("Remaining size: %d", r->req.size_remain);
+		if(r->req.size_remain<0){
+      			printf("Request %d completed\n", r->req.sequence);
+			free(r);
+			fclose(fin);
+			fflush(stdout);		
+			close(fd);
 		}
-	 }
+		else{
+			printf("Still some left\n");
+			fflush(stdout);
+			schedulerIN(r->req);
+			fclose(fin);
+		}
+      	}
+	else if(schedalgo == 2){
+		printf("Doing multilevel\n");
+		int i= 0;
+		if(r->req.quantum_cur == 8){
+			i=8;
+		}
+		printf("i: %d", i); 
+
+			fseek(fin, -1*(r->req.size_remain+1), SEEK_END);
+		do{
+			len = fread( buffer, 1, MAX_HTTP_SIZE, fin);
+			if( len < 0 ) {         /* check for errors */
+				perror( "Error while writing to client" );
+	    		} 
+			else if( len > 0 ) {         /* if none, send chunk */
+				len = write( fd, buffer, len );
+				if( len < 1 ) {           /* check for errors */
+		    			perror( "Error while writing to client" );
+				}
+			}
+	  		r->req.size_remain -= len;
+			i++;
+		}while(len == MAX_HTTP_SIZE && i<8);
+		
+		//Readd request to queue if it still has more data
+	  	r->req.size_remain -= len;
+		printf("Total size: %d", r->req.file_size);
+		printf("Remaining size: %d", r->req.size_remain);
+		if(r->req.size_remain<0){
+      			printf("Request %d completed\n", r->req.sequence);
+			free(r);
+			fclose(fin);
+			fflush(stdout);		
+			close(fd);
+		}
+		else{
+			printf("Still some left\n");
+			fflush(stdout);
+			if(r->req.quantum_cur==8){
+				printf("Moving to 64 queue\n");
+				r->req.quantum_cur=64;
+			}
+			else if(r->req.quantum_cur==64){
+				printf("Moving to RR queue\n");
+				r->req.quantum_cur=128; //Not actually 128, just a marker
+			}
+			schedulerIN(r->req);
+			fclose(fin);
+		}
+	}
+	 
 
     //delete served request from list once complete
     //*** Remove this out in similar implementation if doing quantum based transfers****
-    delete(r->req);
   //Close connection to client socket when done
   //*** Remove this out in similar implementation if doing quantum based transfers****
-  close( fd );
+  //close( fd );
 }
+
+void worker(){
+	while(1){
+	
+	sem_wait(&workerready);
+	if(!isEmpty(queue8) || !isEmpty(queue64) || !isEmpty(queuerr)){
+		printf("\nThere is still so much to do!\n");	
+		//int nextReq = schedulerOUT();
+		pthread_mutex_lock(&workmutex);
+		serve_client();//nextReq);
+		printf("Queue size: %d\n", queue8->size);
+		pthread_mutex_unlock(&workmutex);
+	}
+
+	}
+}
+
 
 //--------------------------------------------------------------------------
 /* This function is where the program starts running.
@@ -590,19 +686,28 @@ int main( int argc, char **argv ) {
   //init number of requests so far to one
   int globe_count = 1;
   int fd;
+  int workernum;
+
+  //initialize semaphore
+  sem_init(&workerready, 0, 0);
+  //initialize mutex
+  if (pthread_mutex_init(&workmutex, NULL) != 0)
+  {
+    printf("\n mutex initilization failed\n");
+    return 1;
+  }
+
+
+
 
   /* check cmd line arguments, will be used to determine schedule algos later
    */
   //Has port info ?
-  if( ( argc < 2 ) || ( sscanf( argv[1], "%d", &port ) < 1 ) ) {
-    printf( "usage: sms <port>\n" );
+  if( ( argc < 4 ) || ( sscanf( argv[1], "%d", &port ) < 1 ) ) {
+    printf( "usage: sms <port> <scheduling algorithm> <# of worker threads>\n" );
     return 0;
   }
-  //Indicates shceduling algo to use?
-  if(argc < 3){
-    printf("what scheduling algo?\n");
-    return 0;
-  }
+
   //What schedule 
   if(strcmp(argv[2], "SJF") == 0){
     printf("Shortest Job first Scheduling\n");
@@ -620,12 +725,28 @@ int main( int argc, char **argv ) {
     printf("cannot determine scheduling algo, terminating\n");
     return 0;
   }
+	
+  //set number of worker threads
+  workernum = atoi(argv[3]);
 
+  constructQueues();	
   //point the global sequence to the globe_count
   glob_seq = &globe_count;
 
   //initilize network & port stuffs
   network_init( port );
+
+  //assign specified amount of worker threads
+  pthread_t *workers;
+  if ( (workers  = malloc(sizeof(pthread_t)*workernum)) == NULL){
+    printf("Error Allocating Memory, exiting...\n");
+    return -1;
+  }
+
+  //create the threads
+ // for(int i = 0; i < workernum; ++i){
+ //   pthread_create(&workers[i], NULL, (void *)&worker, NULL);
+ // }
 
   //infinite loop 
   for( ;; ) {
@@ -639,14 +760,19 @@ int main( int argc, char **argv ) {
     // Then serve the request to the client
 
     for( fd = network_open(); fd >= 0; fd = network_open() ) {
+	
       request_parse(fd);
-  		int nextReq = schedulerOUT(head);
-		serve_client(nextReq,head);
+  	//int nextReq = schedulerOUT();
+	//serve_client();//nextReq);
+	//printf("queue size: %d\n", queue8->size);
     }
-	printf("Count: %d", count());
-	while(count(head) != 0){
-		int nextReq = schedulerOUT(head);
-		serve_client(head->req.sequence,head);
+	
+	while(!isEmpty(queue8) || !isEmpty(queue64) || !isEmpty(queuerr)){
+		sem_post(&workerready);
+		//serve_client();
 	}
+	//worker();
+
   }
+  //destructQueues();//Will probably never hit this
 }
