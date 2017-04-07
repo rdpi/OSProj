@@ -105,7 +105,6 @@ queue *queue8;
 queue *queue64; //Only in MML
 queue *queuerr; //Only in MML
 
-
 int isEmpty(queue *q);
 
 //Initializer
@@ -648,23 +647,23 @@ static void serve_client(){//request *r) {
 
 void worker(){
 	while(1){
+		sem_wait(&workerready);
+		pthread_mutex_lock(&workmutex);
 		if(!isEmpty(workerqueue)){
 			//Dequeue Operation
 			struct request newReq = dequeue(workerqueue)->req;
 			//schedule the request
 			schedulerIN(newReq);
-	  	} 
+	  	}
 		else{
-			sem_wait(&workerready);
 			if(!isEmpty(queue8) || !isEmpty(queue64) || !isEmpty(queuerr)){
 				printf("\nThere is still so much to do!\n");	
 				//int nextReq = schedulerOUT();
-				pthread_mutex_lock(&workmutex);
 				serve_client();//nextReq);
 				printf("Queue size: %d\n", queue8->size);
-				pthread_mutex_unlock(&workmutex);
 			}
 		}
+		pthread_mutex_unlock(&workmutex);
 	}
 }
 
@@ -760,6 +759,7 @@ int main( int argc, char **argv ) {
 
     for( fd = network_open(); fd >= 0; fd = network_open() ) {
 	
+
       request_parse(fd);
   	//int nextReq = schedulerOUT();
 	//serve_client();//nextReq);
